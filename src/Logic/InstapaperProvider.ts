@@ -17,7 +17,7 @@ import { BookmarksProvider } from "./Provider";
 
 const CONSUMER_KEY = "d9199656c5cf4e1ebd6021e9cc73eef4";
 const CONSUMER_SECRET = "90e4d04cf8a3476fa9bcc7a7efa704bf";
-const oauth = new OAuth({
+export const oauth = new OAuth({
     consumer: {
         key: CONSUMER_KEY,
         secret: CONSUMER_SECRET,

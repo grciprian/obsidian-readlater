@@ -22,6 +22,7 @@ import path from "path";
 import { getFilesInFolder } from "src/utils";
 import moment from "moment";
 import { ReadlaterProvider } from "./Provider";
+import { oauth } from "./InstapaperProvider";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const electron = require("electron");
@@ -39,6 +40,14 @@ export type Bookmark = {
     url: string;
 };
 
+export type InstapaperHighlight = {
+    highlight_id: number;
+    bookmark_id: number;
+    text: string;
+    position: number;
+    time: number;
+};
+
 export type CreateFileOpts = {
     unattended?: boolean;
     title?: string;
@@ -49,7 +58,7 @@ export type CreateFileOpts = {
 
 export default class Processor {
     app: App;
-    static fileNameRE = /[\\/:]/gm;
+    static fileNameRE = /[*"\\/<>:|?]/gm;
     // static _proxies: Map<Server,number> = new Map();
     static _ports: Map<number, boolean> = new Map();
     /**
@@ -120,8 +129,39 @@ export default class Processor {
         }
     }
 
+    async addInstapaperHighlights(bookmarkId: string | undefined, md: string) {
+        if(!bookmarkId) return md;
+        const { token, secret } = getReadlaterSettings().instapaper;
+        if (!token || !secret) throw new Error("Not authorized with Instapaper");
+        const data = {
+            url: `https://www.instapaper.com/api/1.1/bookmarks/${bookmarkId}/highlights`,
+            method: `POST`,
+        };
+        const au = oauth.authorize({ ...data }, { key: token, secret: secret });
+        const req = {
+            url: data.url,
+            method: data.method,
+            // body: new URLSearchParams(data.data).toString(),
+            headers: oauth.toHeader(au) as any,
+            contentType: "application/x-www-form-urlencoded",
+            throw: false,
+        };
+        const response = await requestUrl(req);
+        response.json.forEach((e: InstapaperHighlight) => {
+            const firstOccurrence = md.indexOf(e.text);
+            const firstPart = md.slice(0, firstOccurrence);
+            const middlePart = md.slice(firstOccurrence, firstOccurrence + e.text.length);
+            const finalPart = md.slice(firstOccurrence + e.text.length);
+            md = firstPart + "==" + middlePart + "==" + finalPart;
+        });
+        return md;
+    }
+
     async createFileFromURL(url: string, options?: CreateFileOpts) {
-        const [extractedTitle, md] = await this.downloadAsMarkDown(url);
+        let [extractedTitle, md] = await this.downloadAsMarkDown(url);
+        if(options?.provider === ReadlaterProvider.Instapaper) {
+            md = await this.addInstapaperHighlights(options?.id, md);
+        }
         const title = options?.title || extractedTitle || url;
         const attr = getReadlaterSettings().urlAttribute;
         // const content = `---\n${attr}: "${url}"\n---\n` + md;
@@ -132,8 +172,12 @@ export default class Processor {
             provider: options?.provider,
             synchtime: moment().valueOf(),
         };
-        const content = "---\n" + stringifyYaml(frontMatter) + "---\n" + md;
         const fileName = this.normalizeFileName(title) + ".md";
+        const highlightsQuery =
+`\`\`\`query
+/==[^(==)]*==( *(%%[^(%%)]+%%)|(<!--[^(\-\->)]+-->))?/ file:/^${fileName}$/
+\`\`\``;
+        const content = "---\n" + stringifyYaml(frontMatter) + "---\n" + md + "\n\n___\n" + highlightsQuery;
         let folder = options?.folder || getReadlaterSettings().readLaterFolder || "/";
         if (!folder) {
             folder =
