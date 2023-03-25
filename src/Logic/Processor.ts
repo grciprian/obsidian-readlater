@@ -129,8 +129,10 @@ export default class Processor {
         }
     }
 
-    async addInstapaperHighlights(bookmarkId: string | undefined, md: string) {
-        if(!bookmarkId) return md;
+    async addInstapaperHighlights(bookmarkId: string | undefined, md: string): Promise<[string, string[], string[]]> {
+        let found: string[] = [];
+        let notFoundBecauseMdFormatting: string[] = [];
+        if(!bookmarkId) return [md, found, notFoundBecauseMdFormatting];
         const { token, secret } = getReadlaterSettings().instapaper;
         if (!token || !secret) throw new Error("Not authorized with Instapaper");
         const data = {
@@ -149,18 +151,24 @@ export default class Processor {
         const response = await requestUrl(req);
         response.json.forEach((e: InstapaperHighlight) => {
             const firstOccurrence = md.indexOf(e.text);
+            if(firstOccurrence === -1) {
+                notFoundBecauseMdFormatting.push(e.text);
+                return;
+            }
+            found.push(e.text);
             const firstPart = md.slice(0, firstOccurrence);
-            const middlePart = md.slice(firstOccurrence, firstOccurrence + e.text.length);
             const finalPart = md.slice(firstOccurrence + e.text.length);
-            md = firstPart + "==" + middlePart + "==" + finalPart;
+            md = firstPart + "==" + e.text + "==" + finalPart;
         });
-        return md;
+        return [md, found, notFoundBecauseMdFormatting];
     }
 
     async createFileFromURL(url: string, options?: CreateFileOpts) {
         let [extractedTitle, md] = await this.downloadAsMarkDown(url);
+        let found: string[] = [];
+        let notFoundBecauseMdFormatting: string[] = [];
         if(options?.provider === ReadlaterProvider.Instapaper) {
-            md = await this.addInstapaperHighlights(options?.id, md);
+            [md, found, notFoundBecauseMdFormatting]  = await this.addInstapaperHighlights(options?.id, md);
         }
         const title = options?.title || extractedTitle || url;
         const attr = getReadlaterSettings().urlAttribute;
@@ -173,11 +181,17 @@ export default class Processor {
             synchtime: moment().valueOf(),
         };
         const fileName = this.normalizeFileName(title) + ".md";
-        const highlightsQuery =
+        let content = "---\n" + stringifyYaml(frontMatter) + "---\n" + md;
+        if(options?.provider === ReadlaterProvider.Instapaper) {
+            const highlightsQuery =
 `\`\`\`query
 /==[^(==)]*==( *(%%[^(%%)]+%%)|(<!--[^(\-\->)]+-->))?/ file:/^${fileName}$/
 \`\`\``;
-        const content = "---\n" + stringifyYaml(frontMatter) + "---\n" + md + "\n\n___\n" + highlightsQuery;
+            content += `\n\n## Highlights\n\n### Linked [${found.length}]\n___\n${highlightsQuery}\n\n### Unlinked [${notFoundBecauseMdFormatting.length}] cuz of md formatting\n___\n`;
+            notFoundBecauseMdFormatting.forEach(v => {
+                content += `- ${v}\n`;
+            });
+        }
         let folder = options?.folder || getReadlaterSettings().readLaterFolder || "/";
         if (!folder) {
             folder =
